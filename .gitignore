@@ -1,0 +1,113 @@
+# Data directories
+# Ignore trained models
+outputs/*.pth
+
+# Ignore training outputs
+outputs/*.csv
+outputs/*.png
+results/
+
+# Ignore Streamlit secrets
+.streamlit/secrets.toml
+
+
+
+data/
+outputs/
+processed_data/
+
+# Raw dataset
+raw_data/
+*.nii.gz
+*.nii
+
+# Model checkpoints (optional - keep best_model.pth)
+*.pth
+*.pt
+!models/weights/best_model.pth
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Documentation
+docs/_build/
+site/
+
+# Logging
+logs/
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+
+# OS specific
+.DS_Store
+Thumbs.db
+*.bak
+
+# Credentials
+.env
+.env.local
+credentials.json
+secrets.yaml
+
+# Package manager
+poetry.lock
+Pipfile.lock
+
+# Node modules (if used)
+node_modules/
