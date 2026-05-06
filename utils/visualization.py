@@ -12,6 +12,25 @@ import torch
 from pathlib import Path
 
 
+def mri_window_to_uint8(slice_2d: np.ndarray, p_low: float = 2.0, p_high: float = 98.0) -> np.ndarray:
+    """
+    Robust MRI display scaling: percentile window reduces noise from outliers
+    compared to min-max normalization. Returns uint8 [0, 255].
+    """
+    x = np.asarray(slice_2d, dtype=np.float64)
+    flat = x.ravel()
+    if flat.size == 0:
+        return np.zeros_like(slice_2d, dtype=np.uint8)
+    lo, hi = np.percentile(flat, (p_low, p_high))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo, hi = float(np.min(x)), float(np.max(x))
+        if hi <= lo:
+            return np.zeros_like(slice_2d, dtype=np.uint8)
+    clipped = np.clip(x, lo, hi)
+    out = (clipped - lo) / (hi - lo)
+    return (np.clip(out, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
 def plot_confusion_matrix(predictions, targets, num_classes=4, normalize=True, save_path=None):
     """
     Plot confusion matrix
@@ -189,13 +208,11 @@ def plot_segmentation_results(image, mask, prediction, slice_idx=0, save_path=No
     
     fig, axes = plt.subplots(1, 4, figsize=(18, 4))
     
-    # Normalize image for display
+    # Window first channel (or 2D) for clearer grayscale MRI
     if image.ndim == 3:
-        img_display = image[:, :, 0]
-        img_display = (img_display - img_display.min()) / (img_display.max() - img_display.min() + 1e-6)
+        img_display = mri_window_to_uint8(image[:, :, 0]).astype(np.float64) / 255.0
     else:
-        img_display = image
-        img_display = (img_display - img_display.min()) / (img_display.max() - img_display.min() + 1e-6)
+        img_display = mri_window_to_uint8(image).astype(np.float64) / 255.0
     
     # Colors for segmentation
     colors = ['black', '#ff4444', '#44ff44', '#4444ff']

@@ -263,9 +263,15 @@ class SegmentationMetrics:
         Returns:
             metrics_dict: Dictionary with all metrics
         """
+        # Dice and F1 are mathematically equivalent for per-class segmentation
+        # with TP/FP/FN; we therefore derive F1 directly from Dice to avoid
+        # averaging inconsistencies across different callers.
+        dice_per_class = self.compute_dice(per_class=True)
+        dice_macro = dice_per_class.mean()
+
         metrics = {
-            'dice': self.compute_dice().item(),
-            'dice_per_class': self.compute_dice(per_class=True).cpu().numpy(),
+            'dice': dice_macro.item(),
+            'dice_per_class': dice_per_class.cpu().numpy(),
             'iou': self.compute_iou().item(),
             'iou_per_class': self.compute_iou(per_class=True).cpu().numpy(),
             'accuracy': self.compute_accuracy().item(),
@@ -274,8 +280,8 @@ class SegmentationMetrics:
             'precision_per_class': self.compute_precision(per_class=True).cpu().numpy(),
             'recall': self.compute_recall().item(),
             'recall_per_class': self.compute_recall(per_class=True).cpu().numpy(),
-            'f1': self.compute_f1().item(),
-            'f1_per_class': self.compute_f1(per_class=True).cpu().numpy(),
+            'f1': dice_macro.item(),
+            'f1_per_class': dice_per_class.cpu().numpy(),
         }
         return metrics
     
@@ -430,6 +436,21 @@ def count_model_parameters(model: nn.Module) -> Dict:
     }
     
     return stats
+
+
+def compute_segmentation_metrics(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    num_classes: int = 4,
+    ignore_index: int = -100,
+) -> Dict:
+    """
+    Convenience wrapper used across frontend and scripts to ensure
+    identical metric computation (macro-averaged, multiclass safe).
+    """
+    metrics = SegmentationMetrics(num_classes=num_classes, ignore_index=ignore_index)
+    metrics.update(predictions, targets)
+    return metrics.compute_all_metrics()
 
 
 if __name__ == "__main__":

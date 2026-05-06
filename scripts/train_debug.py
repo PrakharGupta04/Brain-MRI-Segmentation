@@ -8,7 +8,7 @@ import os
 # Fix imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from models.architecture import AttentionUNet
+from models.model_registry import create_model, list_model_keys
 from models.losses import CombinedLoss
 from utils.dataset_loader import BrainMRIDataModule
 from utils.transforms import get_augmentation_pipeline
@@ -21,6 +21,9 @@ def main():
     TRAIN_SAMPLES = 2000
     VAL_SAMPLES = 500
     EPOCHS = 2
+    MODEL_NAME = os.environ.get("BRAIN_MRI_MODEL_NAME", "mobilenet_attention_unet")
+    if MODEL_NAME not in list_model_keys():
+        raise ValueError(f"Unknown BRAIN_MRI_MODEL_NAME={MODEL_NAME}")
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -56,7 +59,7 @@ def main():
     print(f"Batches per epoch: {len(train_loader)}")
 
     # ================= MODEL =================
-    model = AttentionUNet(4, 4).to(DEVICE)
+    model = create_model(MODEL_NAME, 4, 4, pretrained=False).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     loss_fn = CombinedLoss(num_classes=4)
 
@@ -105,8 +108,8 @@ def main():
     save_dir = project_root / "models" / "saved"
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    model_path = save_dir / "debug_model.pth"
-    torch.save(model.state_dict(), model_path)
+    model_path = save_dir / f"debug_model_{MODEL_NAME}.pth"
+    torch.save({"model_state_dict": model.state_dict(), "model_name": MODEL_NAME}, model_path)
 
     print(f"\nModel saved at: {model_path}")
 

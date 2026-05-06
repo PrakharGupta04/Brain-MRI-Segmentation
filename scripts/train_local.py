@@ -49,7 +49,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import with modular paths
-from models.architecture import AttentionUNet, count_parameters
+from models.model_registry import create_model, count_parameters, list_model_keys
 from models.losses import CombinedLoss
 from models.metrics import SegmentationMetrics, count_model_parameters
 from utils.dataset_loader import BrainMRIDataModule
@@ -106,10 +106,11 @@ class Trainer:
     def build_model(self):
         """Build model"""
         logger.info("Building model...")
-        model = AttentionUNet(
+        model = create_model(
+            model_key=self.config["model_name"],
             in_channels=4,
             num_classes=4,
-            pretrained=True
+            pretrained=self.config["pretrained_encoder"],
         )
         model = model.to(self.device)
         
@@ -190,7 +191,10 @@ class Trainer:
         logger.info(f"Loading checkpoint from {ckpt_path} ...")
         checkpoint = torch.load(ckpt_path, map_location=self.device)
 
-        model.load_state_dict(checkpoint['model_state_dict'])
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
         logger.info("  ✓ Model weights loaded.")
 
         # Restore optimizer state so momentum / adaptive terms carry over,
@@ -446,6 +450,24 @@ def main():
     
     parser.add_argument('--data_dir', required=True, help='Path to processed_data/')
     parser.add_argument('--output_dir', default='outputs/train_local', help='Output directory')
+    parser.add_argument(
+        '--model_name',
+        default='mobilenet_attention_unet',
+        choices=list(list_model_keys()),
+        help='Architecture key for this run',
+    )
+    parser.add_argument(
+        '--pretrained_encoder',
+        action='store_true',
+        default=False,
+        help='Use pretrained encoder where supported by selected model',
+    )
+    parser.add_argument(
+        '--experiment_name',
+        type=str,
+        default=None,
+        help='Optional experiment name. Auto-generated when omitted.',
+    )
     parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate')
@@ -499,10 +521,15 @@ def main():
         )
     # ------------------------------------------------------------------
 
+    exp_name = args.experiment_name or f"{args.model_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_output_dir = Path(args.output_dir) / args.model_name / exp_name
+
     # Create config
     config = {
         'data_dir': args.data_dir,
-        'output_dir': args.output_dir,
+        'output_dir': str(run_output_dir),
+        'model_name': args.model_name,
+        'pretrained_encoder': args.pretrained_encoder,
         'epochs': args.epochs,
         'batch_size': args.batch_size,
         'learning_rate': args.learning_rate,

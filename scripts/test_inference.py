@@ -1,10 +1,11 @@
 import sys
+import os
 from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from models.architecture import AttentionUNet
+from models.model_registry import create_model
 from utils.dataset_loader import BrainMRIDataset
 
 # ================= DEVICE =================
@@ -12,13 +13,17 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
 # ================= LOAD MODEL =================
-model = AttentionUNet(4, 4).to(device)
+model_name = os.environ.get("BRAIN_MRI_MODEL_NAME", "mobilenet_attention_unet")
+model = create_model(model_name, 4, 4, pretrained=False).to(device)
 
 checkpoint = torch.load("outputs/best_model.pth", map_location=device)
-model.load_state_dict(checkpoint["model_state_dict"])
+if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+    model.load_state_dict(checkpoint["model_state_dict"])
+else:
+    model.load_state_dict(checkpoint)
 
 model.eval()
-print("Model loaded successfully\n")
+print(f"Model loaded successfully ({model_name})\n")
 
 # ================= LOAD DATA =================
 dataset = BrainMRIDataset(
@@ -42,11 +47,9 @@ for i in range(10):
 
         # Optional: soften predictions (helps debug)
         probs = torch.softmax(output, dim=1)
-        print("Max tumor prob:", probs[:, 2, :, :].max().item())
+        print("Max edema class prob:", probs[:, 2, :, :].max().item())
 
         pred = torch.argmax(probs, dim=1)
-        tumor_mask = probs[:, 2, :, :] > 0.01
-        pred[tumor_mask] = 2
 
     print(f"\nSample {i}")
     print("Ground Truth:", torch.unique(mask))

@@ -24,7 +24,7 @@ if '/kaggle/working' not in sys.path:
     sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import with modular paths
-from models.architecture import AttentionUNet, count_parameters
+from models.model_registry import create_model, count_parameters, list_model_keys
 from models.losses import CombinedLoss
 from models.metrics import SegmentationMetrics, count_model_parameters
 from utils.dataset_loader import BrainMRIDataModule
@@ -83,10 +83,11 @@ class KaggleTrainer:
     def build_model(self):
         """Build model"""
         logger.info("Building model...")
-        model = AttentionUNet(
+        model = create_model(
+            model_key=self.config["model_name"],
             in_channels=4,
             num_classes=4,
-            pretrained=True
+            pretrained=self.config["pretrained_encoder"],
         )
         model = model.to(self.device)
         
@@ -367,6 +368,23 @@ def main():
                        help='Path to processed_data/')
     parser.add_argument('--output_dir', default='/kaggle/working/outputs',
                        help='Output directory')
+    parser.add_argument(
+        '--model_name',
+        default='mobilenet_attention_unet',
+        choices=list(list_model_keys()),
+        help='Architecture key for this run',
+    )
+    parser.add_argument(
+        '--pretrained_encoder',
+        action='store_true',
+        default=False,
+        help='Use pretrained encoder where supported by selected model',
+    )
+    parser.add_argument(
+        '--experiment_name',
+        default=None,
+        help='Optional run name. Auto-generated when omitted.',
+    )
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size (GPU optimized)')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate')
@@ -382,9 +400,14 @@ def main():
     args = parser.parse_args()
     
     # Create config (Kaggle specific defaults)
+    exp_name = args.experiment_name or f"{args.model_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_output_dir = Path(args.output_dir) / args.model_name / exp_name
+
     config = {
         'data_dir': args.data_dir,
-        'output_dir': args.output_dir,
+        'output_dir': str(run_output_dir),
+        'model_name': args.model_name,
+        'pretrained_encoder': args.pretrained_encoder,
         'epochs': args.epochs,
         'batch_size': args.batch_size,
         'learning_rate': args.learning_rate,

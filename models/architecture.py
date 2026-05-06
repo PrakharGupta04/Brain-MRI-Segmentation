@@ -184,6 +184,82 @@ class ASPPModule(nn.Module):
         return out
 
 
+class DepthwiseSeparableConv(nn.Module):
+    """Depthwise separable conv for lightweight bottleneck variants."""
+
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1):
+        super(DepthwiseSeparableConv, self).__init__()
+        self.depthwise = nn.Conv2d(
+            in_channels,
+            in_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=in_channels,
+            bias=False,
+        )
+        self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.depthwise(x)
+        x = self.pointwise(x)
+        x = self.bn(x)
+        return self.relu(x)
+
+
+class LightweightASPP(nn.Module):
+    """
+    Lightweight ASPP: channel reduction + depthwise separable dilated branches.
+    Input: [B, 1280, 4, 4], Output: [B, 256, 4, 4]
+    """
+
+    def __init__(self, in_channels: int = 1280, out_channels: int = 256, mid_channels: int = 128):
+        super(LightweightASPP, self).__init__()
+
+        self.channel_reduce = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+        )
+
+        self.branch1 = nn.Sequential(
+            nn.Conv2d(mid_channels, mid_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+        )
+        self.branch_d6 = DepthwiseSeparableConv(mid_channels, mid_channels, kernel_size=3, padding=6, dilation=6)
+        self.branch_d12 = DepthwiseSeparableConv(mid_channels, mid_channels, kernel_size=3, padding=12, dilation=12)
+        self.branch_d18 = DepthwiseSeparableConv(mid_channels, mid_channels, kernel_size=3, padding=18, dilation=18)
+
+        self.image_pool = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Conv2d(mid_channels, mid_channels, kernel_size=1, bias=False),
+            nn.GroupNorm(8, mid_channels),
+            nn.ReLU(inplace=True),
+        )
+
+        self.project = nn.Sequential(
+            nn.Conv2d(mid_channels * 5, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        size = x.size()[2:]
+        x = self.channel_reduce(x)
+        out1 = self.branch1(x)
+        out6 = self.branch_d6(x)
+        out12 = self.branch_d12(x)
+        out18 = self.branch_d18(x)
+        pool = self.image_pool(x)
+        pool = F.interpolate(pool, size=size, mode="bilinear", align_corners=False)
+        out = torch.cat([out1, out6, out12, out18, pool], dim=1)
+        return self.project(out)
+
+
 class AttentionUNet(nn.Module):
     """
     Lightweight Attention-Enhanced U-Net with MobileNetV2 Encoder
@@ -216,11 +292,22 @@ class AttentionUNet(nn.Module):
     Model Size: 12.8 MB (FP32), 6.4 MB (FP16)
     """
     
-    def __init__(self, in_channels: int = 4, num_classes: int = 4, pretrained: bool = True):
+    def __init__(
+        self,
+        in_channels: int = 4,
+        num_classes: int = 4,
+        pretrained: bool = True,
+        use_lightweight_aspp: bool = True,
+        use_attention: bool = True,
+        use_aspp: bool = True,
+    ):
         super(AttentionUNet, self).__init__()
         
         self.in_channels = in_channels
         self.num_classes = num_classes
+        self.use_attention = use_attention
+        self.use_aspp = use_aspp
+        self.use_lightweight_aspp = use_lightweight_aspp
         
         # Load pretrained MobileNetV2
         mobilenet = models.mobilenet_v2(pretrained=pretrained)
@@ -273,10 +360,17 @@ class AttentionUNet(nn.Module):
         self.enc4 = mobilenet.features[14:19]
         # Output: [B, 1280, 4, 4] - NOT 160!
         
-        # ============ BOTTLENECK: ASPP ============
-        # FIXED: Accept 1280 input channels (actual encoder output)
-        self.aspp = ASPPModule(in_channels=1280, out_channels=256)
-        # Output: [B, 256, 4, 4]
+        # ============ BOTTLENECK ============
+        if use_aspp and use_lightweight_aspp:
+            self.aspp = LightweightASPP(in_channels=1280, out_channels=256)
+        elif use_aspp:
+            self.aspp = ASPPModule(in_channels=1280, out_channels=256)
+        else:
+            self.aspp = nn.Sequential(
+                nn.Conv2d(1280, 256, kernel_size=1, bias=False),
+                nn.BatchNorm2d(256),
+                nn.ReLU(inplace=True),
+            )
         
         # ============ DECODER WITH ATTENTION GATES ============
         # CRITICAL: Ensure spatial dimensions match in attention gates
@@ -285,7 +379,8 @@ class AttentionUNet(nn.Module):
         self.upconv3 = nn.ConvTranspose2d(256, 96, kernel_size=4, stride=2, padding=1)
         # upconv3 output: [B, 96, 8, 8]
         # skip from e3: [B, 96, 8, 8] ✓ Same spatial size
-        self.attn3 = AttentionGate(channels_g=96, channels_x=96, channels_out=96)
+        if use_attention:
+            self.attn3 = AttentionGate(channels_g=96, channels_x=96, channels_out=96)
         self.dec3 = self._conv_block(96 + 96, 96)
         # Output: [B, 96, 8, 8]
         
@@ -293,7 +388,8 @@ class AttentionUNet(nn.Module):
         self.upconv2 = nn.ConvTranspose2d(96, 32, kernel_size=4, stride=2, padding=1)
         # upconv2 output: [B, 32, 16, 16]
         # skip from e2: [B, 32, 16, 16] ✓ Same spatial size
-        self.attn2 = AttentionGate(channels_g=32, channels_x=32, channels_out=32)
+        if use_attention:
+            self.attn2 = AttentionGate(channels_g=32, channels_x=32, channels_out=32)
         self.dec2 = self._conv_block(32 + 32, 32)
         # Output: [B, 32, 16, 16]
         
@@ -301,7 +397,8 @@ class AttentionUNet(nn.Module):
         self.upconv1 = nn.ConvTranspose2d(32, 24, kernel_size=4, stride=2, padding=1)
         # upconv1 output: [B, 24, 32, 32]
         # skip from e1: [B, 24, 32, 32] ✓ Same spatial size
-        self.attn1 = AttentionGate(channels_g=24, channels_x=24, channels_out=24)
+        if use_attention:
+            self.attn1 = AttentionGate(channels_g=24, channels_x=24, channels_out=24)
         self.dec1 = self._conv_block(24 + 24, 24)
         # Output: [B, 24, 32, 32]
         
@@ -309,7 +406,8 @@ class AttentionUNet(nn.Module):
         self.upconv0 = nn.ConvTranspose2d(24, 16, kernel_size=4, stride=2, padding=1)
         # upconv0 output: [B, 16, 64, 64]
         # skip from e0: [B, 16, 64, 64] ✓ Same spatial size
-        self.attn0 = AttentionGate(channels_g=16, channels_x=16, channels_out=16)
+        if use_attention:
+            self.attn0 = AttentionGate(channels_g=16, channels_x=16, channels_out=16)
         self.dec0 = self._conv_block(16 + 16, 16)
         # Output: [B, 16, 64, 64]
         
@@ -337,7 +435,7 @@ class AttentionUNet(nn.Module):
         CRITICAL FIX: Initialize ONLY new layers.
         DO NOT reinitialize pretrained encoder weights!
         """
-        # Initialize ASPP
+        # Initialize bottleneck
         for module in self.aspp.modules():
             if isinstance(module, nn.Conv2d):
                 nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
@@ -349,17 +447,18 @@ class AttentionUNet(nn.Module):
                 if hasattr(module, 'bias') and module.bias is not None:
                     nn.init.constant_(module.bias, 0)
         
-        # Initialize Attention Gates
-        for attn_gate in [self.attn0, self.attn1, self.attn2, self.attn3]:
-            for module in attn_gate.modules():
-                if isinstance(module, nn.Conv2d):
-                    nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
-                    if module.bias is not None:
-                        nn.init.constant_(module.bias, 0)
-                elif isinstance(module, nn.BatchNorm2d):
-                    nn.init.constant_(module.weight, 1)
-                    if module.bias is not None:
-                        nn.init.constant_(module.bias, 0)
+        # Initialize Attention Gates (if used)
+        if self.use_attention:
+            for attn_gate in [self.attn0, self.attn1, self.attn2, self.attn3]:
+                for module in attn_gate.modules():
+                    if isinstance(module, nn.Conv2d):
+                        nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+                        if module.bias is not None:
+                            nn.init.constant_(module.bias, 0)
+                    elif isinstance(module, nn.BatchNorm2d):
+                        nn.init.constant_(module.weight, 1)
+                        if module.bias is not None:
+                            nn.init.constant_(module.bias, 0)
         
         # Initialize Decoder transposed convolutions
         for module in [self.upconv0, self.upconv1, self.upconv2, self.upconv3]:
@@ -410,25 +509,25 @@ class AttentionUNet(nn.Module):
         
         # Decoder 3: 4×4 → 8×8
         d3 = self.upconv3(b)           # [B, 96, 8, 8]
-        e3_gated = self.attn3(d3, e3)  # Gate with e3 [B, 96, 8, 8]
+        e3_gated = self.attn3(d3, e3) if self.use_attention else e3
         d3 = torch.cat([d3, e3_gated], dim=1)  # [B, 192, 8, 8]
         d3 = self.dec3(d3)             # [B, 96, 8, 8]
         
         # Decoder 2: 8×8 → 16×16
         d2 = self.upconv2(d3)          # [B, 32, 16, 16]
-        e2_gated = self.attn2(d2, e2)  # Gate with e2 [B, 32, 16, 16]
+        e2_gated = self.attn2(d2, e2) if self.use_attention else e2
         d2 = torch.cat([d2, e2_gated], dim=1)  # [B, 64, 16, 16]
         d2 = self.dec2(d2)             # [B, 32, 16, 16]
         
         # Decoder 1: 16×16 → 32×32
         d1 = self.upconv1(d2)          # [B, 24, 32, 32]
-        e1_gated = self.attn1(d1, e1)  # Gate with e1 [B, 24, 32, 32]
+        e1_gated = self.attn1(d1, e1) if self.use_attention else e1
         d1 = torch.cat([d1, e1_gated], dim=1)  # [B, 48, 32, 32]
         d1 = self.dec1(d1)             # [B, 24, 32, 32]
         
         # Decoder 0: 32×32 → 64×64
         d0 = self.upconv0(d1)          # [B, 16, 64, 64]
-        e0_gated = self.attn0(d0, e0)  # Gate with e0 [B, 16, 64, 64]
+        e0_gated = self.attn0(d0, e0) if self.use_attention else e0
         d0 = torch.cat([d0, e0_gated], dim=1)  # [B, 32, 64, 64]
         d0 = self.dec0(d0)             # [B, 16, 64, 64]
         
